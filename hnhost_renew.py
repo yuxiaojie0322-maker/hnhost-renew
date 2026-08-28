@@ -1,219 +1,280 @@
 #!/usr/bin/env python3
 """
 HNHost 自动续期脚本
-通过 sing-box Hysteria2 代理 + PHPSESSID Cookie 访问面板。
-流程: 代理连接 → Cookie登录 → 访问 create.php → 提交续期 → TG通知
+通过 Discord Token 自动完成 OAuth 登录，获取 PHPSESSID，执行续期。
+全程自动化，无需手动更新 Cookie。
+
+流程: Discord Token → OAuth自动登录 → 获取Session → create.php续期 → TG通知
 """
 
 import asyncio
 import os
 import sys
 import re
-import requests
-import urllib3
-from urllib.parse import urljoin
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+import json
+from pathlib import Path
+from playwright.async_api import async_playwright
 
 # ============ 配置 ============
-HNHOST_COOKIE = os.environ.get("HNHOST_COOKIE", "")
-PROXY_PORT = os.environ.get("PROXY_PORT", "1080")
+DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
+HEADLESS = os.environ.get("HEADLESS", "true") == "true"
+SCREENSHOT_DIR = Path("/tmp/hnhost_screenshots")
 
 BASE_URL = "https://client.hnhost.net"
-PROXY = f"socks5h://127.0.0.1:{PROXY_PORT}"
-
-# ============ Session ============
-session = requests.Session()
-session.verify = False
-session.proxies = {"http": PROXY, "https": PROXY}
-session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-})
-if HNHOST_COOKIE:
-    session.headers["Cookie"] = HNHOST_COOKIE
+DISCORD_LOGIN_URL = f"{BASE_URL}/backend/pdo/discord.php?action=login"
 
 
 # ============ TG 推送 ============
-def send_tg(message: str):
+async def send_tg(text: str, photo: str = None):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         print(f"[TG] 未配置，跳过")
         return
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "Markdown"},
-            timeout=30,
-        )
-        print(f"[TG] 已推送")
-    except Exception as e:
-        print(f"[TG] 异常: {e}")
+    import aiohttp
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}"
+    async with aiohttp.ClientSession() as sess:
+        if photo and os.path.exists(photo):
+            form = aiohttp.FormData()
+            form.add_field("chat_id", TG_CHAT_ID)
+            form.add_field("caption", text)
+            form.add_field("photo", open(photo, "rb"), filename="screenshot.jpg")
+            await sess.post(f"{url}/sendPhoto", data=form)
+        else:
+            await sess.post(f"{url}/sendMessage", json={
+                "chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML"
+            })
+    print(f"[TG] 已推送")
 
 
 # ============ 主流程 ============
-def main():
+async def main():
     print("=" * 50)
-    print("🏠 HNHost 自动续期")
+    print("🏠 HNHost 自动续期（Discord Token 自动登录）")
     print("=" * 50)
 
-    if not HNHOST_COOKIE:
-        print("❌ 未配置 HNHOST_COOKIE")
-        send_tg("❌ HNHost: 未配置 Cookie")
+    if not DISCORD_TOKEN:
+        print("❌ 未配置 DISCORD_TOKEN")
         sys.exit(1)
 
-    print(f"[Config] 代理: socks5://127.0.0.1:{PROXY_PORT}")
-    print(f"[Config] Cookie: {HNHOST_COOKIE[:30]}...\n")
+    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
-    results = []
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=HEADLESS,
+            proxy={"server": "socks5://127.0.0.1:1080"},
+            args=["--no-sandbox", "--disable-setuid-sandbox"],
+        )
+        ctx = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            viewport={"width": 1440, "height": 900},
+        )
+        page = await ctx.new_page()
 
-    # 1. 测试代理和面板连通性
-    print("[1] 测试连接...")
-    try:
-        resp = session.get(f"{BASE_URL}/login.php", timeout=20, allow_redirects=False)
-        print(f"    面板 HTTP {resp.status_code}")
-    except Exception as e:
-        print(f"    ❌ 连接失败: {e}")
-        send_tg("❌ HNHost: 代理连接失败")
-        sys.exit(1)
+        try:
+            # 1. 先打开 Discord 设置 token
+            print("\n[1] 设置 Discord Token...")
+            await page.goto("https://discord.com", wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3000)
 
-    # 2. 检查是否已登录（访问 dashboard 看是否跳转）
-    print("[2] 检查登录状态...")
-    resp = session.get(f"{BASE_URL}/pages/hnfs/index.php", timeout=20, allow_redirects=False)
-    if resp.status_code == 302:
-        location = resp.headers.get("location", "")
-        if "login" in location:
-            print("    ❌ Cookie 已过期，需要重新登录")
-            send_tg("❌ HNHost Cookie 已过期\n请重新登录获取新 Cookie")
-            sys.exit(1)
-    print("    Cookie 有效 ✅")
-    results.append("✅ 登录成功")
+            # 设置 Discord token 到 localStorage
+            await page.evaluate(f"""
+                () => {{
+                    localStorage.setItem('token', JSON.stringify('{DISCORD_TOKEN}'));
+                }}
+            """)
+            print("    Token 已设置")
 
-    # 3. 访问 create.php 页面
-    print("[3] 访问创建/续期页面...")
-    resp = session.get(f"{BASE_URL}/pages/hnfs/create.php", timeout=20, allow_redirects=True)
-    print(f"    HTTP {resp.status_code}, URL: {resp.url}")
+            # 2. 通过 HNHost Discord OAuth 登录
+            print("[2] OAuth 自动登录...")
+            await page.goto(DISCORD_LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(5000)
 
-    if resp.status_code != 200:
-        print(f"    ❌ 无法访问 create.php")
-        results.append("❌ 无法访问续期页面")
-        send_tg("❌ HNHost: 无法访问续期页面")
-        sys.exit(1)
+            current_url = page.url
+            print(f"    当前 URL: {current_url}")
 
-    # 打印页面按钮/表单信息
-    buttons = re.findall(r'<(?:a|button|input)[^>]*(?:href|value|onclick)[^>]*>[^<]*', resp.text, re.I)
-    btn_texts = [re.sub(r'<[^>]+>', '', b).strip()[:50] for b in buttons if b.strip()][:20]
-    print(f"    页面按钮: {btn_texts}")
+            # 检查是否在 Discord 授权页面
+            if "discord.com" in current_url:
+                print("    在 Discord 授权页面，等待自动跳转...")
+                # 尝试自动点击授权按钮（如果有的话）
+                for i in range(15):
+                    await page.wait_for_timeout(2000)
+                    current_url = page.url
+                    if "client.hnhost.net" in current_url:
+                        print(f"    已跳回 HNHost ({i*2}s)")
+                        break
+                    # 尝试点击 "Authorize" 按钮
+                    clicked = await page.evaluate("""
+                        () => {
+                            const btns = document.querySelectorAll('button');
+                            for (const b of btns) {
+                                if (b.textContent.includes('Authorize') || b.textContent.includes('authorize') || b.textContent.includes('授权')) {
+                                    b.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+                    """)
+                    if clicked:
+                        print(f"    点击了授权按钮 ({i*2}s)")
+                    if i % 5 == 0:
+                        print(f"    等待... {i*2}s, URL: {current_url[:60]}")
 
-    forms = re.findall(r'<form[^>]*action=["\']([^"\']*)["\'][^>]*>', resp.text, re.I)
-    print(f"    表单: {forms}")
+                await page.wait_for_timeout(3000)
+                current_url = page.url
 
-    # 搜索续期/创建按钮
-    renew_keywords = ["续期", "续费", "创建", "續期", "renew", "create", "extend", "claim", "领取", "簽到"]
-    renew_done = False
+            # 3. 检查是否登录成功
+            print("[3] 检查登录状态...")
+            current_url = page.url
+            print(f"    URL: {current_url}")
 
-    for kw in renew_keywords:
-        # 查找链接
-        pattern = rf'<(?:a|button)[^>]*(?:href|onclick)[^>]*>[^<]*{kw}[^<]*</(?:a|button)>'
-        matches = re.findall(pattern, resp.text, re.I)
-        if matches:
-            for m in matches[:3]:
-                href_match = re.search(r'href=["\']([^"\']*)["\']', m, re.I)
-                onclick_match = re.search(r"onclick=[\"']([^\"']*)[\"']", m, re.I)
-                if href_match:
-                    url = urljoin(f"{BASE_URL}/", href_match.group(1))
-                    print(f"    找到 '{kw}' 链接: {url}")
-                    resp2 = session.get(url, timeout=20, allow_redirects=True)
-                    print(f"    响应: HTTP {resp2.status_code}")
-                    renew_done = True
+            if "login" in current_url:
+                print("    ❌ 登录失败（Token 无效或 OAuth 被拒）")
+                await page.screenshot(path=str(SCREENSHOT_DIR / "login_fail.png"))
+                await send_tg("❌ HNHost 登录失败\nDiscord Token 可能无效")
+                return
+
+            # 获取 cookies
+            cookies = await ctx.cookies()
+            phpsessid = None
+            for c in cookies:
+                if c["name"] == "PHPSESSID":
+                    phpsessid = c["value"]
                     break
-                elif onclick_match:
-                    print(f"    找到 '{kw}' 按钮: {onclick_match.group(1)[:50]}")
-                    renew_done = True
-                    break
-            if renew_done:
-                break
+            print(f"    PHPSESSID: {phpsessid[:20] + '...' if phpsessid else '未找到'}")
+            print("    登录成功 ✅")
 
-    # 查找表单提交
-    if not renew_done:
-        for form_action in forms:
-            if any(kw in form_action.lower() for kw in ["create", "renew", "submit"]):
-                form_url = urljoin(f"{BASE_URL}/", form_action)
-                print(f"    找到表单: {form_url}")
+            # 4. 访问创建/续期页面
+            print("[4] 访问续期页面...")
 
-                # 提取隐藏字段
-                hidden = re.findall(
-                    r'<input[^>]*type=["\']hidden["\'][^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\']',
-                    resp.text, re.I
-                )
-                form_data = {n: v for n, v in hidden}
-                print(f"    隐藏字段: {list(form_data.keys())}")
+            # 先访问 index 看有什么
+            await page.goto(f"{BASE_URL}/pages/hnfs/index.php", wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3000)
+            page_text = await page.inner_text("body")
+            print(f"    index 页面文字: {page_text[:300]}")
 
-                resp2 = session.post(form_url, data=form_data, timeout=20, allow_redirects=True)
-                print(f"    表单提交: HTTP {resp2.status_code}")
-                renew_done = True
-                break
+            # 搜索所有链接
+            links = await page.evaluate("""
+                () => {
+                    return Array.from(document.querySelectorAll('a')).map(a => ({
+                        text: a.textContent.trim().substring(0, 50),
+                        href: a.href
+                    })).filter(l => l.text && l.href);
+                }
+            """)
+            print(f"    页面链接: {len(links)} 个")
+            for link in links[:10]:
+                print(f"      {link['text']} → {link['href'][:60]}")
 
-    # 直接尝试 create.php?create=true
-    if not renew_done:
-        print("    尝试直接 create=true...")
-        resp2 = session.get(f"{BASE_URL}/pages/hnfs/create.php?create=true", timeout=20, allow_redirects=True)
-        print(f"    响应: HTTP {resp2.status_code}")
-        if resp2.status_code == 200:
-            renew_done = True
+            # 访问 create.php
+            print("\n    访问 create.php...")
+            await page.goto(f"{BASE_URL}/pages/hnfs/create.php", wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3000)
+            page_text = await page.inner_text("body")
+            print(f"    create.php 文字: {page_text[:300]}")
 
-    # 4. 访问 renew.php
-    print("[4] 检查 renew.php...")
-    resp3 = session.get(f"{BASE_URL}/pages/hnfs/renew.php", timeout=20, allow_redirects=True)
-    print(f"    HTTP {resp3.status_code}")
+            # 搜索按钮
+            buttons = await page.evaluate("""
+                () => {
+                    return Array.from(document.querySelectorAll('button, input[type="submit"], a.btn')).map(b => ({
+                        text: b.textContent.trim().substring(0, 50) || b.value || '',
+                        onclick: b.onclick ? 'yes' : 'no',
+                        href: b.href || '',
+                    })).filter(b => b.text);
+                }
+            """)
+            print(f"    按钮: {buttons}")
 
-    if resp3.status_code == 200:
-        renew_buttons = re.findall(r'<(?:a|button)[^>]*>([^<]*)</(?:a|button)>', resp3.text, re.S)
-        renew_texts = [re.sub(r'<[^>]+>', '', b).strip()[:50] for b in renew_buttons if b.strip()][:10]
-        print(f"    renew.php 按钮: {renew_texts}")
+            # 访问 renew.php
+            print("\n    访问 renew.php...")
+            await page.goto(f"{BASE_URL}/pages/hnfs/renew.php", wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3000)
+            page_text = await page.inner_text("body")
+            print(f"    renew.php 文字: {page_text[:300]}")
 
-        for kw in renew_keywords:
-            pattern = rf'<(?:a|button)[^>]*(?:href|onclick)[^>]*>[^<]*{kw}[^<]*</(?:a|button)>'
-            matches = re.findall(pattern, resp3.text, re.I)
-            if matches:
-                for m in matches[:3]:
-                    href_match = re.search(r'href=["\']([^"\']*)["\']', m, re.I)
-                    if href_match:
-                        url = urljoin(f"{BASE_URL}/", href_match.group(1))
-                        print(f"    找到 '{kw}' 链接: {url}")
-                        session.get(url, timeout=20, allow_redirects=True)
+            renew_buttons = await page.evaluate("""
+                () => {
+                    return Array.from(document.querySelectorAll('button, input[type="submit"], a.btn')).map(b => ({
+                        text: b.textContent.trim().substring(0, 50) || b.value || '',
+                        onclick: b.getAttribute('onclick') || '',
+                        href: b.href || '',
+                    })).filter(b => b.text);
+                }
+            """)
+            print(f"    renew 按钮: {renew_buttons}")
+
+            # 5. 尝试续期
+            print("[5] 执行续期...")
+            renew_done = False
+
+            # 在 create.php 和 renew.php 中搜索续期按钮
+            for page_url in [f"{BASE_URL}/pages/hnfs/create.php", f"{BASE_URL}/pages/hnfs/renew.php"]:
+                await page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(2000)
+
+                # 搜索各种续期关键词
+                keywords = ["续期", "續期", "创建", "創建", "renew", "create", "extend", "claim", "领取", "簽到", "签到", "submit", "確認"]
+                for kw in keywords:
+                    clicked = await page.evaluate(f"""
+                        () => {{
+                            const els = document.querySelectorAll('button, a, input[type="submit"]');
+                            for (const el of els) {{
+                                const text = (el.textContent || el.value || '').trim();
+                                if (text.includes('{kw}') || text.toLowerCase().includes('{kw.lower()}')) {{
+                                    el.click();
+                                    return true;
+                                }}
+                            }}
+                            return false;
+                        }}
+                    """)
+                    if clicked:
+                        print(f"    点击了 '{kw}' 按钮")
+                        await page.wait_for_timeout(5000)
+                        result_text = await page.inner_text("body")
+                        print(f"    结果: {result_text[:200]}")
+                        await page.screenshot(path=str(SCREENSHOT_DIR / "renew_result.png"))
                         renew_done = True
                         break
                 if renew_done:
                     break
 
-    # 5. 结果
-    if renew_done:
-        results.append("✅ 续期操作已执行")
-    else:
-        results.append("⚠️ 未找到续期按钮（可能已续期）")
+            # 尝试直接 create=true
+            if not renew_done:
+                print("    尝试 create=true...")
+                await page.goto(f"{BASE_URL}/pages/hnfs/create.php?create=true", wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(3000)
+                page_text = await page.inner_text("body")
+                print(f"    结果: {page_text[:200]}")
+                if "success" in page_text.lower() or "成功" in page_text:
+                    renew_done = True
 
-    # 6. 检查最终状态
-    print("[5] 检查最终状态...")
-    resp_final = session.get(f"{BASE_URL}/pages/hnfs/status.php", timeout=20, allow_redirects=True)
-    if resp_final.status_code == 200:
-        # 提取状态信息
-        status_text = re.sub(r'<[^>]+>', ' ', resp_final.text)
-        status_text = re.sub(r'\s+', ' ', status_text).strip()
-        # 找关键词
-        for kw in ["active", "running", "expire", "到期", "剩余", "days", "天"]:
-            if kw.lower() in status_text.lower():
-                idx = status_text.lower().find(kw.lower())
-                snippet = status_text[max(0,idx-20):idx+40]
-                print(f"    状态: ...{snippet}...")
-                break
+            # 6. 结果
+            if renew_done:
+                msg = "✅ HNHost 续期操作已执行"
+            else:
+                # 截图最终状态
+                await page.screenshot(path=str(SCREENSHOT_DIR / "final.png"))
+                msg = "⚠️ HNHost 未找到续期按钮（可能已续期或页面结构不同）"
 
-    msg = "🏠 *HNHost 自动续期*\n" + "\n".join(results)
-    print(f"\n{msg}")
-    send_tg(msg)
+            print(f"\n{msg}")
+            await send_tg(msg, str(SCREENSHOT_DIR / "renew_result.png") if renew_done else str(SCREENSHOT_DIR / "final.png"))
+
+        except Exception as e:
+            print(f"[!] 异常: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                await page.screenshot(path=str(SCREENSHOT_DIR / "error.png"))
+                await send_tg(f"❌ HNHost 异常: {e}", str(SCREENSHOT_DIR / "error.png"))
+            except:
+                pass
+        finally:
+            await browser.close()
+
     print("\n✅ 任务完成")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

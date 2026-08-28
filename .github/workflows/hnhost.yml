@@ -20,7 +20,9 @@ jobs:
           python-version: '3.11'
 
       - name: 安装依赖
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
 
       - name: 安装 sing-box
         run: |
@@ -30,45 +32,20 @@ jobs:
           /tmp/sing-box version | head -1
 
       - name: 启动 Hysteria2 代理
-        env:
-          HY2_SERVER: ${{ secrets.HY2_SERVER }}
-          HY2_PORT: ${{ secrets.HY2_PORT }}
-          HY2_PASSWORD: ${{ secrets.HY2_PASSWORD }}
-          HY2_SNI: ${{ secrets.HY2_SNI }}
         run: |
-          python3 -c "
-          import json
-          cfg = {
-              'log': {'level': 'info'},
-              'inbounds': [{'type': 'socks', 'listen': '127.0.0.1', 'listen_port': 1080}],
-              'outbounds': [{
-                  'type': 'hysteria2',
-                  'server': '${HY2_SERVER}',
-                  'server_port': int('${HY2_PORT}'),
-                  'password': '${HY2_PASSWORD}',
-                  'tls': {'enabled': True, 'server_name': '${HY2_SNI}', 'insecure': True}
-              }]
-          }
-          with open('/tmp/sb-config.json', 'w') as f:
-              json.dump(cfg, f)
-          print('Config generated')
-          "
+          cat > /tmp/sb-config.json << 'EOF'
+          {"log":{"level":"info"},"inbounds":[{"type":"socks","listen":"127.0.0.1","listen_port":1080}],"outbounds":[{"type":"hysteria2","server":"168.107.22.153","server_port":41706,"password":"6d126f82-f51f-4bdb-91ec-3a2a9cf84306","tls":{"enabled":true,"server_name":"www.bing.com","insecure":true}}]}
+          EOF
           nohup /tmp/sing-box run -c /tmp/sb-config.json > /tmp/sb.log 2>&1 &
           sleep 5
-          echo "=== sing-box ==="
-          ps aux | grep sing-box | grep -v grep
           echo "=== proxy test ==="
           curl -s --socks5-hostname 127.0.0.1:1080 https://httpbin.org/ip --max-time 15 || echo "proxy failed"
-          echo ""
-          echo "=== hnhost test ==="
-          curl -s --socks5-hostname 127.0.0.1:1080 https://client.hnhost.net/login.php -o /dev/null -w "HTTP %{http_code}" --max-time 15
 
       - name: 执行续期
         env:
-          HNHOST_COOKIE: ${{ secrets.HNHOST_COOKIE }}
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          PROXY_PORT: "1080"
         run: python hnhost_renew.py
 
       - name: 清理旧工作日志
