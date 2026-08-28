@@ -1,0 +1,85 @@
+name: HNHost 自动续期
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 安装 sing-box
+        run: |
+          curl -sL "https://github.com/SagerNet/sing-box/releases/download/v1.13.19/sing-box-1.13.19-linux-amd64.tar.gz" -o /tmp/sb.tar.gz
+          tar -xzf /tmp/sb.tar.gz -C /tmp --strip-components=1 sing-box-1.13.19-linux-amd64/sing-box
+          chmod +x /tmp/sing-box
+          /tmp/sing-box version | head -1
+
+      - name: 启动 Hysteria2 代理
+        env:
+          HY2_SERVER: ${{ secrets.HY2_SERVER }}
+          HY2_PORT: ${{ secrets.HY2_PORT }}
+          HY2_PASSWORD: ${{ secrets.HY2_PASSWORD }}
+          HY2_SNI: ${{ secrets.HY2_SNI }}
+        run: |
+          python3 -c "
+          import json
+          cfg = {
+              'log': {'level': 'info'},
+              'inbounds': [{'type': 'socks', 'listen': '127.0.0.1', 'listen_port': 1080}],
+              'outbounds': [{
+                  'type': 'hysteria2',
+                  'server': '${HY2_SERVER}',
+                  'server_port': int('${HY2_PORT}'),
+                  'password': '${HY2_PASSWORD}',
+                  'tls': {'enabled': True, 'server_name': '${HY2_SNI}', 'insecure': True}
+              }]
+          }
+          with open('/tmp/sb-config.json', 'w') as f:
+              json.dump(cfg, f)
+          print('Config generated')
+          "
+          nohup /tmp/sing-box run -c /tmp/sb-config.json > /tmp/sb.log 2>&1 &
+          sleep 5
+          echo "=== sing-box ==="
+          ps aux | grep sing-box | grep -v grep
+          echo "=== proxy test ==="
+          curl -s --socks5-hostname 127.0.0.1:1080 https://httpbin.org/ip --max-time 15 || echo "proxy failed"
+          echo ""
+          echo "=== hnhost test ==="
+          curl -s --socks5-hostname 127.0.0.1:1080 https://client.hnhost.net/login.php -o /dev/null -w "HTTP %{http_code}" --max-time 15
+
+      - name: 执行续期
+        env:
+          HNHOST_COOKIE: ${{ secrets.HNHOST_COOKIE }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          PROXY_PORT: "1080"
+        run: python hnhost_renew.py
+
+      - name: 清理旧工作日志
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          THIS_RUN="${{ github.run_id }}"
+          gh run list --workflow "hnhost.yml" --limit 50 --json databaseId \
+            --jq ".[].databaseId" \
+            | grep -v "^${THIS_RUN}$" \
+            | while read id; do
+                gh run delete "$id" 2>/dev/null || true
+              done
+          echo "✅ 已清理"
