@@ -43,7 +43,7 @@ jobs:
 
       - name: 执行续期
         env:
-          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          DISCORD_TOKENS: ${{ secrets.DISCORD_TOKENS }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python hnhost_renew.py

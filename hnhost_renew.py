@@ -16,7 +16,8 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 
 # ============ 配置 ============
-DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
+DISCORD_TOKENS = os.environ.get("DISCORD_TOKENS", "")
+DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")  # 兼容单账号
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
 HEADLESS = os.environ.get("HEADLESS", "true") == "true"
@@ -47,17 +48,37 @@ async def send_tg(text: str, photo: str = None):
     print(f"[TG] 已推送")
 
 
-# ============ 主流程 ============
-async def main():
-    print("=" * 50)
-    print("🏠 HNHost 自动续期（Discord Token 自动登录）")
-    print("=" * 50)
-
-    if not DISCORD_TOKEN:
-        print("❌ 未配置 DISCORD_TOKEN")
+def parse_tokens():
+    """解析多账号 token 列表"""
+    tokens = []
+    if DISCORD_TOKENS:
+        try:
+            data = json.loads(DISCORD_TOKENS)
+            for item in data:
+                if isinstance(item, str):
+                    tokens.append({"token": item, "name": f"账号{len(tokens)+1}"})
+                elif isinstance(item, dict):
+                    tokens.append({
+                        "token": item["token"],
+                        "name": item.get("name", f"账号{len(tokens)+1}")
+                    })
+        except Exception as e:
+            print(f"[!] DISCORD_TOKENS 解析失败: {e}")
+    if DISCORD_TOKEN and not tokens:
+        tokens.append({"token": DISCORD_TOKEN, "name": "账号1"})
+    if not tokens:
+        print("❌ 未配置 DISCORD_TOKENS 或 DISCORD_TOKEN")
         sys.exit(1)
+    return tokens
 
-    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+
+# ============ 单账号续期 ============
+async def renew_account(account: dict, p) -> bool:
+    token = account["token"]
+    name = account["name"]
+    print(f"\n{'='*50}")
+    print(f"📍 开始处理: {name}")
+    print(f"{'='*50}")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -259,21 +280,47 @@ async def main():
                 msg = "⚠️ HNHost 未找到续期按钮（可能已续期或页面结构不同）"
 
             print(f"\n{msg}")
-            await send_tg(msg, str(SCREENSHOT_DIR / "renew_result.png") if renew_done else str(SCREENSHOT_DIR / "final.png"))
+            await send_tg(f"📍 {name}\n" + msg, str(SCREENSHOT_DIR / "renew_result.png") if renew_done else str(SCREENSHOT_DIR / "final.png"))
+            return renew_done
 
         except Exception as e:
-            print(f"[!] 异常: {e}")
+            print(f"[{name}] [!] 异常: {e}")
             import traceback
             traceback.print_exc()
             try:
-                await page.screenshot(path=str(SCREENSHOT_DIR / "error.png"))
-                await send_tg(f"❌ HNHost 异常: {e}", str(SCREENSHOT_DIR / "error.png"))
+                await page.screenshot(path=str(SCREENSHOT_DIR / f"{name}_error.png"))
+                await send_tg(f"📍 {name}\n❌ 异常: {e}", str(SCREENSHOT_DIR / f"{name}_error.png"))
             except:
                 pass
+            return False
         finally:
             await browser.close()
 
-    print("\n✅ 任务完成")
+
+# ============ 主流程 ============
+async def main():
+    print("=" * 50)
+    print("🏠 HNHost 自动续期（多账号）")
+    print("=" * 50)
+
+    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    accounts = parse_tokens()
+    print(f"共 {len(accounts)} 个账号\n")
+
+    from playwright.async_api import async_playwright
+    async with async_playwright() as p:
+        results = []
+        for account in accounts:
+            success = await renew_account(account, p)
+            results.append((account["name"], success))
+            await asyncio.sleep(3)
+
+    print(f"\n{'='*50}")
+    print("📊 续期汇总")
+    print(f"{'='*50}")
+    for name, ok in results:
+        print(f"  {name}: {'✅ 成功' if ok else '❌ 失败'}")
+    print(f"\n总计: {sum(1 for _, ok in results if ok)}/{len(results)} 成功")
 
 
 if __name__ == "__main__":
