@@ -92,24 +92,16 @@ async def renew_account(account: dict, p) -> bool:
         )
         page = await ctx.new_page()
 
+        # 用 add_init_script 在所有页面加载前注入 Discord token
+        await ctx.add_init_script(f"""
+            try {{ localStorage.setItem('token', JSON.stringify('{token}')); }} catch(e) {{}}
+        """)
+        print(f"\n[1] Discord Token 已注入（init_script）")
+
         try:
-            # 1. 先打开 Discord 设置 token
-            print("\n[1] 设置 Discord Token...")
-            await page.goto("https://discord.com", wait_until="load", timeout=60000)
-            await page.wait_for_timeout(5000)
-
-            # 设置 Discord token 到 localStorage
-            result = await page.evaluate(f"""
-                () => {{
-                    localStorage.setItem('token', JSON.stringify('{token}'));
-                    return localStorage.getItem('token') ? 'OK' : 'FAIL';
-                }}
-            """)
-            print(f"    Token 设置: {result}")
-
-            # 2. 通过 HNHost Discord OAuth 登录
+            # 2. 直接跳转 HNHost OAuth 登录
             print("[2] OAuth 自动登录...")
-            await page.goto(DISCORD_LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(DISCORD_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(5000)
 
             current_url = page.url
