@@ -103,62 +103,118 @@ def login_hnhost(code: str) -> requests.Session | None:
 
 def find_and_click_renew(session: requests.Session, name: str) -> bool:
     """搜索续期按钮并点击"""
-    renew_keywords = ["续期", "續期", "创建", "創建", "renew", "create", "extend", "claim", "领取", "簽到", "签到", "確認", "确认"]
+    renew_keywords = ["续期", "續期", "renew", "extend", "續約"]
+    claim_keywords = ["领取", "領取", "簽到", "签到", "claim", "daily", "check", "每日"]
     renew_done = False
 
-    for page_path in ["/pages/hnfs/create.php", "/pages/hnfs/renew.php", "/pages/hnfs/index.php"]:
-        url = f"{BASE_URL}{page_path}"
-        resp = session.get(url, timeout=20, allow_redirects=True)
-        print(f"  {page_path}: HTTP {resp.status_code}")
+    # 1. 先访问主页面，找到所有导航链接
+    print("  访问主页面...")
+    resp = session.get(f"{BASE_URL}/pages/hnfs/create.php", timeout=20, allow_redirects=True)
+    
+    # 提取所有导航链接
+    all_links = re.findall(r'<a[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', resp.text, re.S)
+    nav_links = {}
+    for href, text in all_links:
+        text = re.sub(r'<[^>]+>', '', text).strip()
+        if text and href and ('管理' in text or '資源' in text or '商店' in text or '伺服器' in text or '創建' in text or '创建' in text):
+            full_url = urljoin(f"{BASE_URL}/", href)
+            nav_links[text] = full_url
+            print(f"    {text} → {full_url}")
 
-        if resp.status_code != 200:
-            continue
-
-        # 检查是否在登录页
-        if "登錄平台" in resp.text or "透過 Discord 登錄" in resp.text:
-            print(f"    → 登录页（未登录）")
-            continue
-
-        # 打印页面按钮
-        buttons = re.findall(r'<(?:a|button)[^>]*>(.*?)</(?:a|button)>', resp.text, re.S)
-        btn_texts = [re.sub(r'<[^>]+>', '', b).strip()[:40] for b in buttons if b.strip()][:10]
-        print(f"    按钮: {btn_texts}")
-
-        # 搜索续期关键词
-        for kw in renew_keywords:
-            # 查找链接
-            pattern = rf'<a[^>]*href=["\']([^"\']+)["\'][^>]*>[^<]*{kw}[^<]*</a>'
-            matches = re.findall(pattern, resp.text, re.I)
-            if matches:
-                link_url = urljoin(f"{BASE_URL}/", matches[0])
-                print(f"    找到 '{kw}': {link_url}")
-                resp2 = session.get(link_url, timeout=20, allow_redirects=True)
-                print(f"    响应: HTTP {resp2.status_code}")
-                renew_done = True
-                break
-
-            # 查找表单
-            form_pattern = rf'<form[^>]*action=["\']([^"\']+)["\'][^>]*>.*?{kw}'
-            form_matches = re.findall(form_pattern, resp.text, re.I | re.S)
-            if form_matches:
-                form_url = urljoin(f"{BASE_URL}/", form_matches[0])
-                print(f"    找到表单: {form_url}")
-                hidden = re.findall(r'<input[^>]*type=["\']hidden["\'][^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\']', resp.text, re.I)
-                form_data = {n: v for n, v in hidden}
-                resp2 = session.post(form_url, data=form_data, timeout=20, allow_redirects=True)
-                print(f"    提交: HTTP {resp2.status_code}")
-                renew_done = True
-                break
-
-        if renew_done:
+    # 2. 访问"管理伺服器"页面，找续期按钮
+    manage_url = None
+    for text, url in nav_links.items():
+        if '管理' in text and '伺服器' in text:
+            manage_url = url
             break
+    
+    if manage_url:
+        print(f"\n  访问管理伺服器: {manage_url}")
+        resp = session.get(manage_url, timeout=20, allow_redirects=True)
+        print(f"    HTTP {resp.status_code}")
+        
+        if resp.status_code == 200 and "登錄平台" not in resp.text:
+            # 打印页面内容摘要
+            page_text = re.sub(r'<[^>]+>', ' ', resp.text)
+            page_text = re.sub(r'\s+', ' ', page_text).strip()
+            print(f"    页面摘要: {page_text[:300]}")
+            
+            # 打印按钮
+            buttons = re.findall(r'<(?:a|button)[^>]*>(.*?)</(?:a|button)>', resp.text, re.S)
+            btn_texts = [re.sub(r'<[^>]+>', '', b).strip()[:40] for b in buttons if b.strip()][:15]
+            print(f"    按钮: {btn_texts}")
+            
+            # 搜索续期按钮
+            for kw in renew_keywords + claim_keywords:
+                pattern = rf'<a[^>]*href=["\']([^"\']+)["\'][^>]*>[^<]*{kw}[^<]*</a>'
+                matches = re.findall(pattern, resp.text, re.I)
+                if matches:
+                    link_url = urljoin(f"{BASE_URL}/", matches[0])
+                    print(f"    找到 '{kw}': {link_url}")
+                    resp2 = session.get(link_url, timeout=20, allow_redirects=True)
+                    print(f"    响应: HTTP {resp2.status_code}")
+                    renew_done = True
+                    break
+            
+            # 搜索表单
+            if not renew_done:
+                forms = re.findall(r'<form[^>]*action=["\']([^"\']*)["\'][^>]*>', resp.text, re.I)
+                for form_action in forms:
+                    if form_action and form_action != "#":
+                        form_url = urljoin(f"{BASE_URL}/", form_action)
+                        print(f"    找到表单: {form_url}")
+                        hidden = re.findall(r'<input[^>]*type=["\']hidden["\'][^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\']', resp.text, re.I)
+                        form_data = {n: v for n, v in hidden}
+                        # 添加 submit 按钮
+                        submit_matches = re.findall(r'<input[^>]*type=["\']submit["\'][^>]*name=["\']([^"\']*)["\'][^>]*value=["\']([^"\']*)["\']', resp.text, re.I)
+                        for sn, sv in submit_matches:
+                            if sn:
+                                form_data[sn] = sv
+                        resp2 = session.post(form_url, data=form_data, timeout=20, allow_redirects=True)
+                        print(f"    提交: HTTP {resp2.status_code}")
+                        page_text2 = re.sub(r'<[^>]+>', ' ', resp2.text)
+                        page_text2 = re.sub(r'\s+', ' ', page_text2).strip()
+                        print(f"    结果: {page_text2[:200]}")
+                        renew_done = True
+                        break
 
-    # 尝试直接 create=true
+    # 3. 访问"資源商店"页面，找每日领取
+    store_url = None
+    for text, url in nav_links.items():
+        if '資源' in text or '商店' in text:
+            store_url = url
+            break
+    
+    if store_url:
+        print(f"\n  访问資源商店: {store_url}")
+        resp = session.get(store_url, timeout=20, allow_redirects=True)
+        print(f"    HTTP {resp.status_code}")
+        
+        if resp.status_code == 200 and "登錄平台" not in resp.text:
+            buttons = re.findall(r'<(?:a|button)[^>]*>(.*?)</(?:a|button)>', resp.text, re.S)
+            btn_texts = [re.sub(r'<[^>]+>', '', b).strip()[:40] for b in buttons if b.strip()][:15]
+            print(f"    按钮: {btn_texts}")
+            
+            # 搜索领取按钮
+            for kw in claim_keywords:
+                pattern = rf'<a[^>]*href=["\']([^"\']+)["\'][^>]*>[^<]*{kw}[^<]*</a>'
+                matches = re.findall(pattern, resp.text, re.I)
+                if matches:
+                    link_url = urljoin(f"{BASE_URL}/", matches[0])
+                    print(f"    找到 '{kw}': {link_url}")
+                    resp2 = session.get(link_url, timeout=20, allow_redirects=True)
+                    print(f"    响应: HTTP {resp2.status_code}")
+                    renew_done = True
+                    break
+
+    # 4. 尝试直接 create=true
     if not renew_done:
-        print(f"  尝试 create=true...")
+        print(f"\n  尝试 create=true...")
         resp = session.get(f"{BASE_URL}/pages/hnfs/create.php?create=true", timeout=20, allow_redirects=True)
         if resp.status_code == 200 and "登錄平台" not in resp.text:
-            print(f"    响应: HTTP {resp.status_code}")
+            page_text = re.sub(r'<[^>]+>', ' ', resp.text)
+            page_text = re.sub(r'\s+', ' ', page_text).strip()
+            print(f"    结果: {page_text[:200]}")
             renew_done = True
 
     return renew_done
