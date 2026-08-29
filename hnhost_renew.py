@@ -95,16 +95,17 @@ async def renew_account(account: dict, p) -> bool:
         try:
             # 1. 先打开 Discord 设置 token
             print("\n[1] 设置 Discord Token...")
-            await page.goto("https://discord.com", wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(3000)
+            await page.goto("https://discord.com", wait_until="load", timeout=60000)
+            await page.wait_for_timeout(5000)
 
             # 设置 Discord token 到 localStorage
-            await page.evaluate(f"""
+            result = await page.evaluate(f"""
                 () => {{
-                    localStorage.setItem('token', JSON.stringify('{DISCORD_TOKEN}'));
+                    localStorage.setItem('token', JSON.stringify('{token}'));
+                    return localStorage.getItem('token') ? 'OK' : 'FAIL';
                 }}
             """)
-            print("    Token 已设置")
+            print(f"    Token 设置: {result}")
 
             # 2. 通过 HNHost Discord OAuth 登录
             print("[2] OAuth 自动登录...")
