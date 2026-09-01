@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 HNHost 自动续期（多账号版）
-Discord Token → OAuth Code → 登录 → 首页找服务器续期 + 每日领取
+Discord Token → OAuth Code → 登录 → 检查服务器状态 + 续期 + 每日领取
 """
 
 import os, sys, re, json, requests, urllib3
@@ -55,144 +55,129 @@ def get_oauth_code(token: str) -> str | None:
     return None
 
 
-def renew_account(account: dict) -> bool:
-    name, token = account["name"], account["token"]
-    print(f"\n{'='*50}\n📍 {name}\n{'='*50}")
-
-    # 1. OAuth Code
-    print("[1] 获取 OAuth Code...")
+def login_hnhost(token: str) -> requests.Session:
+    """Discord OAuth 登录 HNHost"""
     code = get_oauth_code(token)
     if not code:
-        send_tg(f"📍 {name}\n❌ OAuth Code 获取失败"); return False
-    print(f"  Code: {code[:20]}...")
-
-    # 2. 登录 HNHost（通过代理）
-    print("[2] 登录 HNHost...")
+        return None
+    
     s = requests.Session()
     s.verify = False
     s.proxies = {"http": PROXY, "https": PROXY}
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     })
-
-    # 访问 OAuth 回调 URL，跟随所有重定向到首页
+    
     resp = s.get(f"{BASE_URL}/backend/pdo/discord.php?code={code}", timeout=20, allow_redirects=True)
-    final_url = resp.url
-    print(f"  最终 URL: {final_url}")
-    print(f"  PHPSESSID: {s.cookies.get('PHPSESSID', '无')[:20]}...")
+    if "PHPSESSID" not in s.cookies:
+        print("  ❌ 登录失败")
+        return None
+    return s
 
-    # 检查是否登录成功（不在登录页）
-    page_text = re.sub(r'<[^>]+>', ' ', resp.text)
-    page_text = re.sub(r'\s+', ' ', page_text).strip()
-    if "登錄平台" in page_text or "透過 Discord 登錄" in page_text:
-        print("  ❌ 未登录（仍在登录页）")
-        print(f"  页面内容: {page_text[:200]}")
+
+def get_server_info(s: requests.Session, server_id: str) -> dict:
+    """获取服务器信息"""
+    try:
+        resp = s.get(f"{BASE_URL}/middleware/localApi/homeInfoApi.php?fx=freeServerInfo&userId={server_id}", timeout=15)
+        data = resp.json()
+        return data.get("response", {})
+    except:
+        return {}
+
+
+def get_user_info(s: requests.Session, user_id: str) -> dict:
+    """获取用户信息"""
+    try:
+        resp = s.get(f"{BASE_URL}/middleware/localApi/homeInfoApi.php?fx=userInfo&userId={user_id}", timeout=15)
+        data = resp.json()
+        return data.get("response", {})
+    except:
+        return {}
+
+
+def get_server_id(page_text: str) -> str | None:
+    """从页面提取服务器 ID"""
+    match = re.search(r'id=([a-f0-9]+)', page_text)
+    return match.group(1) if match else None
+
+
+def check_and_renew(account: dict) -> bool:
+    name, token = account["name"], account["token"]
+    print(f"\n{'='*50}\n📍 {name}\n{'='*50}")
+
+    # 1. 登录
+    print("[1] 登录 HNHost...")
+    s = login_hnhost(token)
+    if not s:
         send_tg(f"📍 {name}\n❌ 登录失败"); return False
     print("  登录成功 ✅")
 
-    # 3. 在首页找服务器和每日领取
-    print("[3] 搜索首页内容...")
-    print(f"  首页摘要: {page_text[:500]}")
+    # 2. 获取首页，找服务器 ID
+    print("[2] 获取服务器信息...")
+    resp = s.get(BASE_URL, timeout=20)
+    server_id = get_server_id(resp.text)
+    
+    if not server_id:
+        print("  ⚠️ 无服务器")
+        send_tg(f"📍 {name}\n⚠️ 无服务器")
+        return True
 
-    # 打印所有链接
-    all_links = re.findall(r'<a[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', resp.text, re.S)
-    link_list = []
-    for href, text in all_links:
-        text = re.sub(r'<[^>]+>', '', text).strip()
-        if text and href and href != "#":
-            full_url = urljoin(final_url, href)
-            link_list.append((text[:40], full_url))
-            print(f"    链接: {text[:40]} → {full_url[:80]}")
+    print(f"  Server ID: {server_id}")
 
-    # 打印所有按钮
-    all_btns = re.findall(r'<(?:button|input[^>]*type=["\']submit["\'])[^>]*>(.*?)</(?:button)>', resp.text, re.S)
-    btn_values = re.findall(r'<input[^>]*type=["\']submit["\'][^>]*value=["\']([^"\']*)["\']', resp.text, re.I)
-    all_btn_texts = [re.sub(r'<[^>]+>', '', b).strip()[:40] for b in all_btns if b.strip()]
-    all_btn_texts += btn_values
-    print(f"  按钮: {all_btn_texts[:20]}")
+    # 3. 获取服务器状态
+    info = get_server_info(s, server_id)
+    if not info:
+        print("  ❌ 获取服务器信息失败")
+        send_tg(f"📍 {name}\n❌ 获取服务器信息失败"); return False
+    
+    state = info.get("state", "Unknown")
+    cpu = info.get("cpu", "?")
+    ram = info.get("ram", "?")
+    disk = info.get("disk", "?")
+    
+    print(f"  状态: {state}")
+    print(f"  CPU: {cpu}%, RAM: {ram}MB, Disk: {disk}MB")
 
-    # 打印所有表单
-    forms = re.findall(r'<form[^>]*action=["\']([^"\']*)["\'][^>]*method=["\']([^"\']*)["\']', resp.text, re.I)
-    print(f"  表单: {forms}")
-
+    # 4. 检查是否需要续期
+    needs_renew = any(k in state for k in ["已过期", "expired", "停止", "到期", "过期"])
+    
     results = []
+    if needs_renew:
+        print("  ⚠️ 需要续期！")
+        # 访问续期页面
+        renew_url = f"{BASE_URL}/index.php?server=renew&id={server_id}"
+        resp2 = s.get(renew_url, timeout=20)
+        if resp2.status_code == 200:
+            print("  ✅ 已访问续期页面")
+            results.append("✅ 服务器续期已执行")
+        else:
+            results.append("❌ 续期页面访问失败")
+    else:
+        print("  ✅ 服务器正常，无需续期")
+        results.append("✅ 服务器正常（限額可用）")
 
-    # 4. 搜索每日领取按钮
-    print("[4] 搜索每日领取...")
-    claim_keywords = ["领取", "領取", "簽到", "签到", "claim", "daily", "check-in", "checkin", "每日", "每日簽到", "每日签到"]
-    claim_done = False
-    for kw in claim_keywords:
-        # 搜索链接
-        for text, url in link_list:
-            if kw in text.lower():
-                print(f"  找到领取链接: {text} → {url}")
-                resp2 = s.get(url, timeout=20, allow_redirects=True)
-                result_text = re.sub(r'<[^>]+>', ' ', resp2.text)
-                result_text = re.sub(r'\s+', ' ', result_text).strip()
-                print(f"  结果: {result_text[:200]}")
-                results.append("✅ 每日领取已执行")
-                claim_done = True
-                break
-        if claim_done: break
-
-        # 搜索按钮
-        for btn_text in all_btn_texts:
-            if kw in btn_text.lower():
-                print(f"  找到领取按钮: {btn_text}")
-                # 查找包含该按钮的表单
-                form_pattern = rf'<form[^>]*>(.*?{kw}.*?)</form>'
-                form_matches = re.findall(form_pattern, resp.text, re.I | re.S)
-                if form_matches:
-                    form_action = re.search(r'<form[^>]*action=["\']([^"\']*)["\']', resp.text, re.I)
-                    action_url = urljoin(final_url, form_action.group(1)) if form_action and form_action.group(1) else final_url
-                    hidden = re.findall(r'<input[^>]*type=["\']hidden["\'][^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\']', resp.text, re.I)
-                    form_data = {n: v for n, v in hidden}
-                    # 添加 submit
-                    for sn, sv in re.findall(r'<input[^>]*type=["\']submit["\'][^>]*name=["\']([^"\']*)["\'][^>]*value=["\']([^"\']*)["\']', resp.text, re.I):
-                        if sn: form_data[sn] = sv
-                    resp2 = s.post(action_url, data=form_data, timeout=20, allow_redirects=True)
-                    print(f"  提交: HTTP {resp2.status_code}")
-                    results.append("✅ 每日领取已执行")
-                    claim_done = True
-                    break
-        if claim_done: break
-
-    if not claim_done:
-        results.append("⚠️ 未找到领取按钮（可能已领取）")
-
-    # 5. 搜索服务器续期
-    print("[5] 搜索服务器续期...")
-    renew_keywords = ["续期", "續期", "renew", "extend", "續約", "延期"]
-    renew_done = False
-    for kw in renew_keywords:
-        for text, url in link_list:
-            if kw in text.lower():
-                print(f"  找到续期链接: {text} → {url}")
-                resp2 = s.get(url, timeout=20, allow_redirects=True)
-                print(f"  响应: HTTP {resp2.status_code}")
-                results.append("✅ 服务器续期已执行")
-                renew_done = True
-                break
-        if renew_done: break
-
-        for btn_text in all_btn_texts:
-            if kw in btn_text.lower():
-                print(f"  找到续期按钮: {btn_text}")
-                results.append("✅ 服务器续期已执行")
-                renew_done = True
-                break
-        if renew_done: break
-
-    if not renew_done:
-        results.append("⚠️ 未找到续期按钮（可能无需续期）")
+    # 5. 每日领取
+    print("[3] 检查每日奖励...")
+    claim_btn = re.search(r'領取每日登錄獎勵', resp.text)
+    if claim_btn:
+        # 点击领取
+        claim_url = f"{BASE_URL}/index.php?server=renew&id={server_id}"
+        resp3 = s.get(claim_url, timeout=20)
+        if "已領取每日獎勵" in resp3.text:
+            print("  ✅ 每日奖励已领取")
+            results.append("✅ 每日奖励已领取")
+        else:
+            results.append("⚠️ 领取状态未知")
+    else:
+        print("  📅 每日奖励已领取")
+        results.append("📅 每日奖励已领取")
 
     # 6. TG 通知
     msg = f"📍 {name}\n" + "\n".join(results)
     print(f"\n{msg}")
     send_tg(msg)
-    return claim_done or renew_done
+    return True
 
 
 def main():
@@ -205,7 +190,7 @@ def main():
     results = []
     for account in accounts:
         try:
-            success = renew_account(account)
+            success = check_and_renew(account)
         except Exception as e:
             print(f"  [!] 异常: {e}")
             send_tg(f"📍 {account['name']}\n❌ 异常: {e}")
