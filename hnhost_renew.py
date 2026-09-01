@@ -77,6 +77,40 @@ def login_hnhost(token: str) -> requests.Session:
     return s
 
 
+def auto_checkin(s: requests.Session, user_id: str) -> tuple[bool, str]:
+    """
+    自动签到
+    返回: (是否成功, 状态描述)
+    """
+    try:
+        # 先检查当前状态
+        resp = s.get(BASE_URL, timeout=20)
+        home_html = resp.text
+
+        # 检查是否已签到
+        if "已領取每日獎勵" in home_html:
+            print("  ✅ 今日已签到")
+            return True, "今日已签到"
+        elif "領取每日登錄獎勵" in home_html:
+            print("  ⚠️ 今日未签到，尝试自动签到...")
+            # 触发签到
+            checkin_url = f"{BASE_URL}/?generalEvent=dailyReward"
+            resp2 = s.get(checkin_url, timeout=20, allow_redirects=True)
+
+            if "已領取每日獎勵" in resp2.text:
+                print("  ✅ 签到成功！")
+                return True, "签到成功 (+10 Coins)"
+            else:
+                print("  ❌ 签到失败")
+                return False, "签到失败"
+        else:
+            print("  ? 签到状态未知")
+            return None, "状态未知"
+    except Exception as e:
+        print(f"  [!] 签到失败: {e}")
+        return False, f"异常: {e}"
+
+
 def get_user_info(s: requests.Session, user_id: str) -> dict:
     """获取用户信息（含余额）"""
     try:
@@ -164,19 +198,16 @@ def check_and_renew(account: dict) -> dict:
         return {"name": name, "success": False, "expire": None, "days_left": None, "balance": None, "checkin": None}
     print(f"  User ID: {user_id}")
 
-    # 3. 检查签到状态
+    # 3. 检查签到状态并自动签到
     print("[3] 检查签到状态...")
-    checkin_status, home_html = check_checkin_status(s)
-    
-    if checkin_status is True:
-        print("  ✅ 今日已签到")
-        checkin_result = "今日已签到"
-    elif checkin_status is False:
-        print("  ⚠️ 今日未签到！")
-        checkin_result = "今日未签到，请手动签到"
+    checkin_success, checkin_result = auto_checkin(s, user_id)
+
+    if checkin_success is True:
+        print("  ✅ 今日已签到或签到成功")
+    elif checkin_success is False:
+        print("  ⚠️ 签到失败")
     else:
         print("  ? 签到状态未知")
-        checkin_result = "状态未知"
 
     # 4. 获取余额
     print("[4] 获取余额...")
@@ -248,7 +279,7 @@ def check_and_renew(account: dict) -> dict:
 
     # 10. 准备 TG 通知
     expire_emoji = "🟢" if (days_left is None or days_left > 3) else "🟡" if days_left > 0 else "🔴"
-    checkin_emoji = "✅" if checkin_status is True else "⚠️" if checkin_status is False else "？"
+    checkin_emoji = "✅" if checkin_success is True else "⚠️" if checkin_success is False else "？"
     
     msg = (
         f"📍 *{nickname}* ({name})\n"
