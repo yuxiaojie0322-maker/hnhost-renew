@@ -220,16 +220,19 @@ def check_and_renew(account: dict) -> dict:
     except:
         state, cpu, ram, disk = "未知", "?", "?", "?"
 
-    # 9. 检查是否需要续期
+    # 9. 检查是否需要续期（仅在到期前一天或当天自动续期）
     results = []
     auto_renew = False
     
     if days_left <= 0:
         print(f"  🚨 服务器已到期！立即续期...")
         auto_renew = True
-    elif days_left <= 3:
-        print(f"  ⚠️ 服务器即将到期（{days_left} 天后），执行续期...")
+    elif days_left == 1:
+        print(f"  ⚠️ 明天到期，执行续期...")
         auto_renew = True
+    else:
+        print(f"  ✅ 服务器正常（剩余 {days_left} 天），无需续期")
+        results.append(f"✅ 服务器正常（剩余 {days_left} 天）")
     
     if auto_renew:
         print("  [6] 触发续期...")
