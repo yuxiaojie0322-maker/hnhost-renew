@@ -113,20 +113,20 @@ def check_and_renew(account: dict) -> bool:
         send_tg(f"📍 {name}\n❌ 登录失败"); return False
     print("  登录成功 ✅")
 
-    # 2. 获取首页，找服务器 ID
+    # 2. 获取首页，找服务器 ID 和 userId
     print("[2] 获取服务器信息...")
     resp = s.get(BASE_URL, timeout=20)
-    server_id = get_server_id(resp.text)
+    server_id, user_id = get_server_id(resp.text)
     
     if not server_id:
         print("  ⚠️ 无服务器")
         send_tg(f"📍 {name}\n⚠️ 无服务器")
         return True
 
-    print(f"  Server ID: {server_id}")
+    print(f"  Server ID: {server_id}, User ID: {user_id}")
 
     # 3. 获取服务器状态
-    info = get_server_info(s, server_id)
+    info = get_server_info(s, user_id)
     if not info:
         print("  ❌ 获取服务器信息失败")
         send_tg(f"📍 {name}\n❌ 获取服务器信息失败"); return False
