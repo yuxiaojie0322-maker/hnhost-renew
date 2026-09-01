@@ -96,10 +96,13 @@ def get_user_info(s: requests.Session, user_id: str) -> dict:
         return {}
 
 
-def get_server_id(page_text: str) -> str | None:
-    """从页面提取服务器 ID"""
-    match = re.search(r'id=([a-f0-9]+)', page_text)
-    return match.group(1) if match else None
+def get_server_id(page_text: str) -> tuple[str | None, str | None]:
+    """从页面提取服务器 ID 和 userId"""
+    # userId 在 JavaScript 中: userId=6a2c6addacbdb
+    user_match = re.search(r'userId=["\']?([a-f0-9]+)', page_text)
+    # serverId 在 renew 链接中: id=6a33722bcd119
+    server_match = re.search(r'/index\.php\?server=renew&id=([a-f0-9]+)', page_text)
+    return server_match.group(1) if server_match else None, user_match.group(1) if user_match else None
 
 
 def check_and_renew(account: dict) -> bool:
