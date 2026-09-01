@@ -14,15 +14,6 @@
 
 ### 1. 配置 GitHub Secrets
 
-| Secret | 值 | 说明 |
-|---|---|---|
-| `HNHOST_COOKIE` | `PHPSESSID=xxx; cf_clearance=xxx` | 登录 Cookie |
-| `HY2_SERVER` | `168.107.22.153` | Hysteria2 服务器 |
-| `HY2_PORT` | `41706` | Hysteria2 端口 |
-| `HY2_PASSWORD` | `6d126f82-f51f-4bdb-91ec-3a2a9cf84306` | Hysteria2 密码 |
-| `HY2_SNI` | `www.bing.com` | Hysteria2 SNI |
-| `TG_BOT_TOKEN` | `8867499536:AAF2vlfTao3wvy0x7HdlNhZJgfqi5i_vINk` | TG Bot Token |
-| `TG_CHAT_ID` | `7772205808` | TG Chat ID |
 
 ### 2. 获取 Cookie
 
