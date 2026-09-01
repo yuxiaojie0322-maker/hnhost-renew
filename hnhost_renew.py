@@ -111,8 +111,8 @@ def extract_expire_date(page_text: str) -> str | None:
     return None
 
 
-def get_server_id_and_expire(s: requests.Session, user_id: str) -> tuple[str | None, str | None]:
-    """从首页获取服务器 ID，从续期页面获取到期日"""
+def get_server_id_and_expire(s: requests.Session, user_id: str) -> tuple[str | None, str | None, str]:
+    """从首页获取服务器 ID，从续期页面获取到期日，返回 (server_id, expire_date, renew_page_text)"""
     # 获取首页找服务器 ID
     resp = s.get(BASE_URL, timeout=20)
     
@@ -125,14 +125,14 @@ def get_server_id_and_expire(s: requests.Session, user_id: str) -> tuple[str | N
     server_id = server_match.group(1) if server_match else None
     
     if not server_id:
-        return None, None
+        return None, None, ""
     
     # 访问续期页面提取到期日
     renew_url = f"{BASE_URL}/index.php?server=renew&id={server_id}"
     resp2 = s.get(renew_url, timeout=20)
     expire_date = extract_expire_date(resp2.text)
     
-    return server_id, expire_date
+    return server_id, expire_date, resp2.text
 
 
 def calculate_days_left(expire_str: str) -> int:
@@ -159,7 +159,7 @@ def check_and_renew(account: dict) -> dict:
 
     # 2. 获取服务器信息和到期日
     print("[2] 获取服务器信息...")
-    server_id, expire_date = get_server_id_and_expire(s, "6a2c6addacbdb")
+    server_id, expire_date, renew_page_text = get_server_id_and_expire(s, "6a2c6addacbdb")
     
     if not server_id:
         print("  ⚠️ 无服务器")
@@ -207,7 +207,7 @@ def check_and_renew(account: dict) -> dict:
 
     # 6. 每日领取
     print("[3] 检查每日奖励...")
-    claim_found = re.search(r'領取每日登錄獎勵', s.text)
+    claim_found = re.search(r'領取每日登錄獎勵', renew_page_text)
     if claim_found:
         renew_url = f"{BASE_URL}/index.php?server=renew&id={server_id}"
         resp3 = s.get(renew_url, timeout=20)
@@ -258,7 +258,7 @@ def main():
         except Exception as e:
             print(f"  [!] 异常: {e}")
             send_tg(f"📍 {account['name']}\n❌ 异常: {e}")
-            result = {"name": account["name"], "success": False}
+            result = {"name": account["name"], "success": False, "expire": None, "days_left": None, "server_id": None}
         all_results.append(result)
 
     # 汇总
