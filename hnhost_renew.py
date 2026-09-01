@@ -318,8 +318,9 @@ def main():
             balance_str = "登录失败"
         
         days_str = f"{days}天" if days is not None else "未知"
+        checkin_str = checkin[:10] if isinstance(checkin, str) and checkin else "未知"
         emoji = "✅" if ok else "❌"
-        print(f"  {emoji} {name}: 余额={balance_str}, 签到={checkin[:10] if isinstance(checkin, str) else checkin}, 到期={expire or '无'} ({days_str})")
+        print(f"  {emoji} {name}: 余额={balance_str}, 签到={checkin_str}, 到期={expire or '无'} ({days_str})")
     
     print(f"{'─' * 50}")
     print(f"💰 总余额: {total_balance} HN Coins")
