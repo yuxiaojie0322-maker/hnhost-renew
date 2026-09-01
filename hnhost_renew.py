@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-HNHost 自动续期（多账号版）
-Discord Token → OAuth Code → 登录 → 检查服务器状态 + 到期时间 + 续期 + 每日领取
+HNHost 自动续期（多账号版）+ 每日签到检查
+Discord Token → OAuth Code → 登录 → 签到检查 + 检查服务器状态 + 到期时间 + 续期
 """
 
 import os, sys, re, json, requests, urllib3
@@ -77,18 +77,8 @@ def login_hnhost(token: str) -> requests.Session:
     return s
 
 
-def get_server_info(s: requests.Session, user_id: str) -> dict:
-    """获取服务器信息"""
-    try:
-        resp = s.get(f"{BASE_URL}/middleware/localApi/homeInfoApi.php?fx=freeServerInfo&userId={user_id}", timeout=15)
-        data = resp.json()
-        return data.get("response", {})
-    except:
-        return {}
-
-
 def get_user_info(s: requests.Session, user_id: str) -> dict:
-    """获取用户信息"""
+    """获取用户信息（含余额）"""
     try:
         resp = s.get(f"{BASE_URL}/middleware/localApi/homeInfoApi.php?fx=userInfo&userId={user_id}", timeout=15)
         data = resp.json()
@@ -97,48 +87,47 @@ def get_user_info(s: requests.Session, user_id: str) -> dict:
         return {}
 
 
+def check_checkin_status(s: requests.Session) -> tuple[bool, str]:
+    """
+    检查签到状态
+    返回: (是否已签到, 首页HTML)
+    """
+    try:
+        resp = s.get(BASE_URL, timeout=20)
+        home_html = resp.text
+        
+        # 检查是否已签到
+        if "已領取每日獎勵" in home_html:
+            return True, home_html
+        elif "領取每日登錄獎勵" in home_html:
+            return False, home_html
+        else:
+            return None, home_html  # 未知状态
+    except Exception as e:
+        print(f"  [!] 签到检查失败: {e}")
+        return None, ""
+
+
+def get_server_id(s: requests.Session) -> str | None:
+    """从首页获取服务器 ID"""
+    try:
+        resp = s.get(BASE_URL, timeout=20)
+        match = re.search(r'/index\.php\?server=renew&id=([a-f0-9]+)', resp.text)
+        return match.group(1) if match else None
+    except:
+        return None
+
+
 def extract_expire_date(page_text: str) -> str | None:
     """从续期页面提取到期日（格式: YYYY/MM/DD）"""
-    # 找表格行中包含到期日的位置
     idx = page_text.find("到期日")
     if idx < 0:
         return None
     after = page_text[idx:idx+3000]
-    # 找日期格式
     dates = re.findall(r'(\d{4}/\d{2}/\d{2})', after)
     if dates:
         return dates[0]
     return None
-
-
-def get_user_id(s: requests.Session) -> str:
-    """从首页 JavaScript 中提取当前登录用户的 userId"""
-    resp = s.get(BASE_URL, timeout=20)
-    # userId 在 API URL 中，格式: &userId=xxxxxxxxx
-    match = re.search(r'[?&]userId=([a-f0-9]+)', resp.text)
-    if match:
-        return match.group(1)
-    return ""
-
-
-def get_server_id_and_expire(s: requests.Session, user_id: str) -> tuple[str | None, str | None, str]:
-    """从首页获取服务器 ID，从续期页面获取到期日，返回 (server_id, expire_date, renew_page_text)"""
-    # 获取首页找服务器 ID
-    resp = s.get(BASE_URL, timeout=20)
-    
-    # serverId 在 renew 链接中
-    server_match = re.search(r'/index\.php\?server=renew&id=([a-f0-9]+)', resp.text)
-    server_id = server_match.group(1) if server_match else None
-    
-    if not server_id:
-        return None, None, ""
-    
-    # 访问续期页面提取到期日
-    renew_url = f"{BASE_URL}/index.php?server=renew&id={server_id}"
-    resp2 = s.get(renew_url, timeout=20)
-    expire_date = extract_expire_date(resp2.text)
-    
-    return server_id, expire_date, resp2.text
 
 
 def calculate_days_left(expire_str: str) -> int:
@@ -160,43 +149,78 @@ def check_and_renew(account: dict) -> dict:
     s = login_hnhost(token)
     if not s:
         send_tg(f"📍 {name}\n❌ 登录失败")
-        return {"name": name, "success": False, "expire": None, "days_left": None, "server_id": None}
+        return {"name": name, "success": False, "expire": None, "days_left": None, "balance": None, "checkin": None}
     print("  登录成功 ✅")
 
-    # 2. 获取用户 ID 和服务器信息
-    print("[2] 获取服务器信息...")
-    user_id = get_user_id(s)
+    # 2. 获取用户 ID
+    print("[2] 获取用户信息...")
+    resp = s.get(BASE_URL, timeout=20)
+    user_match = re.search(r'[?&]userId=([a-f0-9]+)', resp.text)
+    user_id = user_match.group(1) if user_match else None
+    
     if not user_id:
         print("  ❌ 无法获取 userId")
         send_tg(f"📍 {name}\n❌ 无法获取用户 ID")
-        return {"name": name, "success": False, "expire": None, "days_left": None, "server_id": None}
+        return {"name": name, "success": False, "expire": None, "days_left": None, "balance": None, "checkin": None}
     print(f"  User ID: {user_id}")
+
+    # 3. 检查签到状态
+    print("[3] 检查签到状态...")
+    checkin_status, home_html = check_checkin_status(s)
     
-    server_id, expire_date, renew_page_text = get_server_id_and_expire(s, user_id)
+    if checkin_status is True:
+        print("  ✅ 今日已签到")
+        checkin_result = "今日已签到"
+    elif checkin_status is False:
+        print("  ⚠️ 今日未签到！")
+        checkin_result = "今日未签到，请手动签到"
+    else:
+        print("  ? 签到状态未知")
+        checkin_result = "状态未知"
+
+    # 4. 获取余额
+    print("[4] 获取余额...")
+    user_info = get_user_info(s, user_id)
+    balance = user_info.get("hncoin", "?")
+    nickname = user_info.get("nickname", name)
+    print(f"  💰 余额: {balance} HN Coins")
+
+    # 5. 获取服务器信息
+    print("[5] 获取服务器信息...")
+    server_id = get_server_id(s)
     
     if not server_id:
         print("  ⚠️ 无服务器")
-        send_tg(f"📍 {name}\n⚠️ 无服务器")
-        return {"name": name, "success": True, "expire": None, "days_left": None, "server_id": None}
+        send_tg(f"📍 {name}\n⚠️ 无服务器\n💰 余额: {balance} HN Coins\n📅 签到: {checkin_result}")
+        return {"name": name, "success": True, "expire": None, "days_left": None, "balance": balance, "checkin": checkin_result}
 
     print(f"  Server ID: {server_id}")
+
+    # 6. 获取到期日
+    renew_url = f"{BASE_URL}/index.php?server=renew&id={server_id}"
+    resp_renew = s.get(renew_url, timeout=20)
+    expire_date = extract_expire_date(resp_renew.text)
     print(f"  到期日: {expire_date or '未知'}")
 
-    # 3. 计算剩余天数
+    # 7. 计算剩余天数
     days_left = calculate_days_left(expire_date) if expire_date else -1
     print(f"  剩余天数: {days_left} 天")
 
-    # 4. 获取服务器状态
-    info = get_server_info(s, user_id)
-    raw_state = info.get("state", "Unknown") if info else "Unknown"
-    state = re.sub(r'狀態[：:]\s*', '', raw_state).strip() if raw_state else "Unknown"
-    state = re.sub(r'<[^>]+>', '', state).strip()  # 去掉 HTML 标签
-    cpu = info.get("cpu", "?") if info else "?"
-    ram = info.get("ram", "?") if info else "?"
-    disk = info.get("disk", "?") if info else "?"
-    print(f"  状态: {state}, CPU: {cpu}%, RAM: {ram}MB, Disk: {disk}MB")
+    # 8. 获取服务器状态
+    try:
+        resp_info = s.get(f"{BASE_URL}/middleware/localApi/homeInfoApi.php?fx=freeServerInfo&userId={user_id}", timeout=15)
+        info = resp_info.json().get("response", {})
+        raw_state = info.get("state", "Unknown") if info else "Unknown"
+        state = re.sub(r'狀態[：:]\s*', '', raw_state).strip() if raw_state else "Unknown"
+        state = re.sub(r'<[^>]+>', '', state).strip()
+        cpu = info.get("cpu", "?") if info else "?"
+        ram = info.get("ram", "?") if info else "?"
+        disk = info.get("disk", "?") if info else "?"
+        print(f"  状态: {state}, CPU: {cpu}%, RAM: {ram}MB, Disk: {disk}MB")
+    except:
+        state, cpu, ram, disk = "未知", "?", "?", "?"
 
-    # 5. 检查是否需要续期（提前3天自动续期，每次续期加1个月）
+    # 9. 检查是否需要续期
     results = []
     auto_renew = False
     
@@ -208,49 +232,27 @@ def check_and_renew(account: dict) -> dict:
         auto_renew = True
     
     if auto_renew:
-        # 访问续期页面
-        renew_url = f"{BASE_URL}/index.php?server=renew&id={server_id}"
-        resp2 = s.get(renew_url, timeout=20)
-        if resp2.status_code == 200:
-            print("  ✅ 续期页面已访问（触发续期）")
-            results.append("✅ 已触发自动续期")
+        print("  [6] 触发续期...")
+        # 访问续期页面触发自动续期
+        resp_renew2 = s.get(renew_url, timeout=20)
+        if resp_renew2.status_code == 200:
+            print("  ✅ 续期页面已访问")
+            results.append("✅ 已触发续期")
         else:
-            results.append("❌ 续期页面访问失败")
+            results.append("❌ 续期失败")
     else:
         results.append(f"✅ 服务器正常（剩余 {days_left} 天）")
 
-    # 6. 每日领取 + 获取余额
-    print("[3] 检查每日奖励...")
-    claim_found = re.search(r'領取每日登錄獎勵', renew_page_text)
-    if claim_found:
-        # 尝试通过访问续期页面触发领取（按钮是 # 链接，靠 JS 触发）
-        renew_url = f"{BASE_URL}/index.php?server=renew&id={server_id}"
-        resp_claim = s.get(renew_url, timeout=20)
-        # 检查是否已领取
-        if "已領取每日獎勵" in resp_claim.text:
-            print("  ✅ 每日奖励已领取")
-            claim_success = True
-        else:
-            print("  ⚠️ 领取状态未知")
-            claim_success = False
-        results.append("✅ 每日奖励已领取" if claim_success else "⚠️ 领取状态未知")
-    else:
-        print("  📅 每日奖励已领取")
-        claim_success = True
-        results.append("📅 每日奖励已领取")
-
-    # 7. 获取最新余额
-    user_info = get_user_info(s, user_id)
-    balance = user_info.get("hncoin", "?")
-    print(f"  💰 余额: {balance} HN Coins")
-    
-    # 8. TG 通知（含到期时间 + 余额 + 领取状态）
+    # 10. 准备 TG 通知
     expire_emoji = "🟢" if (days_left is None or days_left > 3) else "🟡" if days_left > 0 else "🔴"
+    checkin_emoji = "✅" if checkin_status is True else "⚠️" if checkin_status is False else "？"
+    
     msg = (
-        f"📍 *{name}*\n"
-        f"⏰ *到期时间*: {expire_date or '未知'}\n"
-        f"📅 *剩余天数*: {days_left if days_left >= 0 else '已过期'} 天 {expire_emoji}\n"
+        f"📍 *{nickname}* ({name})\n"
         f"💰 *余额*: {balance} HN Coins\n"
+        f"📅 *签到*: {checkin_emoji} {checkin_result}\n"
+        f"⏰ *到期时间*: {expire_date or '未知'}\n"
+        f"📆 *剩余天数*: {days_left if days_left >= 0 else '已过期'} 天 {expire_emoji}\n"
         f"🖥 *状态*: {state}\n"
         f"💾 *配置*: {cpu}% CPU / {ram}MB RAM / {disk}MB Disk\n"
         f"{'─' * 25}\n"
@@ -263,15 +265,14 @@ def check_and_renew(account: dict) -> dict:
         "success": True,
         "expire": expire_date,
         "days_left": days_left,
-        "server_id": server_id,
-        "state": state,
-        "msg": msg
+        "balance": balance,
+        "checkin": checkin_result
     }
 
 
 def main():
     print("=" * 50)
-    print("🏠 HNHost 自动续期（多账号）")
+    print("🏠 HNHost 自动续期 + 签到检查")
     print("=" * 50)
     accounts = parse_tokens()
     print(f"共 {len(accounts)} 个账号")
@@ -283,23 +284,32 @@ def main():
         except Exception as e:
             print(f"  [!] 异常: {e}")
             send_tg(f"📍 {account['name']}\n❌ 异常: {e}")
-            result = {"name": account["name"], "success": False, "expire": None, "days_left": None, "server_id": None}
+            result = {"name": account["name"], "success": False, "expire": None, "days_left": None, "balance": None, "checkin": None}
         all_results.append(result)
 
     # 汇总
     print(f"\n{'='*50}")
     print("📊 汇总")
+    total_balance = 0
     for r in all_results:
         name = r.get("name", "?")
+        balance = r.get("balance")
+        checkin = r.get("checkin", "?")
         expire = r.get("expire")
         days = r.get("days_left")
         ok = r.get("success", False)
+        
+        balance_str = f"{balance} Coins" if balance else "未知"
+        if isinstance(balance, (int, float)):
+            total_balance += balance
+        
         days_str = f"{days}天" if days is not None else "未知"
         emoji = "✅" if ok else "❌"
-        print(f"  {emoji} {name}: 到期 {expire or '无'} ({days_str})")
+        print(f"  {emoji} {name}: 余额={balance_str}, 签到={checkin[:10]}, 到期={expire or '无'} ({days_str})")
     
-    success_count = sum(1 for r in all_results if r.get("success"))
-    print(f"总计: {success_count}/{len(all_results)} 成功")
+    print(f"{'─' * 50}")
+    print(f"💰 总余额: {total_balance} HN Coins")
+    print(f"总计: {sum(1 for r in all_results if r.get('success'))}/{len(all_results)} 成功")
 
 
 if __name__ == "__main__":
