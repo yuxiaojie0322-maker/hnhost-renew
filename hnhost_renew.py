@@ -299,9 +299,13 @@ def main():
         days = r.get("days_left")
         ok = r.get("success", False)
         
-        balance_str = f"{balance} Coins" if balance else "未知"
-        if isinstance(balance, (int, float)) and balance != "?":
-            total_balance += balance
+        balance_str = f"{balance} Coins" if balance and balance != "?" else "未知"
+        # 尝试将余额转换为数字并累加
+        try:
+            if balance and balance != "?":
+                total_balance += int(balance)
+        except:
+            pass
         
         days_str = f"{days}天" if days is not None else "未知"
         emoji = "✅" if ok else "❌"
