@@ -111,14 +111,20 @@ def extract_expire_date(page_text: str) -> str | None:
     return None
 
 
+def get_user_id(s: requests.Session) -> str:
+    """从首页 JavaScript 中提取当前登录用户的 userId"""
+    resp = s.get(BASE_URL, timeout=20)
+    # userId 在 API URL 中，格式: &userId=xxxxxxxxx
+    match = re.search(r'[?&]userId=([a-f0-9]+)', resp.text)
+    if match:
+        return match.group(1)
+    return ""
+
+
 def get_server_id_and_expire(s: requests.Session, user_id: str) -> tuple[str | None, str | None, str]:
     """从首页获取服务器 ID，从续期页面获取到期日，返回 (server_id, expire_date, renew_page_text)"""
     # 获取首页找服务器 ID
     resp = s.get(BASE_URL, timeout=20)
-    
-    # userId 在 JavaScript 中
-    user_match = re.search(r'userId=["\']?([a-f0-9]+)', resp.text)
-    uid = user_match.group(1) if user_match else user_id
     
     # serverId 在 renew 链接中
     server_match = re.search(r'/index\.php\?server=renew&id=([a-f0-9]+)', resp.text)
@@ -157,9 +163,16 @@ def check_and_renew(account: dict) -> dict:
         return {"name": name, "success": False, "expire": None, "days_left": None, "server_id": None}
     print("  登录成功 ✅")
 
-    # 2. 获取服务器信息和到期日
+    # 2. 获取用户 ID 和服务器信息
     print("[2] 获取服务器信息...")
-    server_id, expire_date, renew_page_text = get_server_id_and_expire(s, "6a2c6addacbdb")
+    user_id = get_user_id(s)
+    if not user_id:
+        print("  ❌ 无法获取 userId")
+        send_tg(f"📍 {name}\n❌ 无法获取用户 ID")
+        return {"name": name, "success": False, "expire": None, "days_left": None, "server_id": None}
+    print(f"  User ID: {user_id}")
+    
+    server_id, expire_date, renew_page_text = get_server_id_and_expire(s, user_id)
     
     if not server_id:
         print("  ⚠️ 无服务器")
@@ -174,7 +187,7 @@ def check_and_renew(account: dict) -> dict:
     print(f"  剩余天数: {days_left} 天")
 
     # 4. 获取服务器状态
-    info = get_server_info(s, "6a2c6addacbdb")
+    info = get_server_info(s, user_id)
     raw_state = info.get("state", "Unknown") if info else "Unknown"
     state = re.sub(r'狀態[：:]\s*', '', raw_state).strip() if raw_state else "Unknown"
     state = re.sub(r'<[^>]+>', '', state).strip()  # 去掉 HTML 标签
@@ -227,7 +240,7 @@ def check_and_renew(account: dict) -> dict:
         results.append("📅 每日奖励已领取")
 
     # 7. 获取最新余额
-    user_info = get_user_info(s, "6a2c6addacbdb")
+    user_info = get_user_info(s, user_id)
     balance = user_info.get("hncoin", "?")
     print(f"  💰 余额: {balance} HN Coins")
     
