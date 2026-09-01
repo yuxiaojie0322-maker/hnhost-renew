@@ -294,6 +294,8 @@ def main():
     print(f"\n{'='*50}")
     print("📊 汇总")
     total_balance = 0
+    success_count = 0
+    fail_count = 0
     for r in all_results:
         name = r.get("name", "?")
         balance = r.get("balance")
@@ -302,21 +304,26 @@ def main():
         days = r.get("days_left")
         ok = r.get("success", False)
         
-        balance_str = f"{balance} Coins" if balance and balance != "?" else "未知"
-        # 尝试将余额转换为数字并累加
-        try:
-            if balance and balance != "?":
-                total_balance += int(balance)
-        except:
-            pass
+        if ok:
+            success_count += 1
+            balance_str = f"{balance} Coins" if balance and balance != "?" else "未知"
+            # 尝试将余额转换为数字并累加
+            try:
+                if balance and balance != "?":
+                    total_balance += int(balance)
+            except:
+                pass
+        else:
+            fail_count += 1
+            balance_str = "登录失败"
         
         days_str = f"{days}天" if days is not None else "未知"
         emoji = "✅" if ok else "❌"
-        print(f"  {emoji} {name}: 余额={balance_str}, 签到={checkin[:10]}, 到期={expire or '无'} ({days_str})")
+        print(f"  {emoji} {name}: 余额={balance_str}, 签到={checkin[:10] if isinstance(checkin, str) else checkin}, 到期={expire or '无'} ({days_str})")
     
     print(f"{'─' * 50}")
     print(f"💰 总余额: {total_balance} HN Coins")
-    print(f"总计: {sum(1 for r in all_results if r.get('success'))}/{len(all_results)} 成功")
+    print(f"总计: {success_count} 成功 / {fail_count} 失败")
 
 
 if __name__ == "__main__":
