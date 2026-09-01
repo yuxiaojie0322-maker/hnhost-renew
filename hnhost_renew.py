@@ -300,7 +300,7 @@ def main():
         ok = r.get("success", False)
         
         balance_str = f"{balance} Coins" if balance else "未知"
-        if isinstance(balance, (int, float)):
+        if isinstance(balance, (int, float)) and balance != "?":
             total_balance += balance
         
         days_str = f"{days}天" if days is not None else "未知"
