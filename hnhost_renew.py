@@ -205,27 +205,38 @@ def check_and_renew(account: dict) -> dict:
     else:
         results.append(f"✅ 服务器正常（剩余 {days_left} 天）")
 
-    # 6. 每日领取
+    # 6. 每日领取 + 获取余额
     print("[3] 检查每日奖励...")
     claim_found = re.search(r'領取每日登錄獎勵', renew_page_text)
     if claim_found:
+        # 尝试通过访问续期页面触发领取（按钮是 # 链接，靠 JS 触发）
         renew_url = f"{BASE_URL}/index.php?server=renew&id={server_id}"
-        resp3 = s.get(renew_url, timeout=20)
-        if "已領取每日獎勵" in resp3.text:
+        resp_claim = s.get(renew_url, timeout=20)
+        # 检查是否已领取
+        if "已領取每日獎勵" in resp_claim.text:
             print("  ✅ 每日奖励已领取")
-            results.append("✅ 每日奖励已领取")
+            claim_success = True
         else:
-            results.append("⚠️ 领取状态未知")
+            print("  ⚠️ 领取状态未知")
+            claim_success = False
+        results.append("✅ 每日奖励已领取" if claim_success else "⚠️ 领取状态未知")
     else:
         print("  📅 每日奖励已领取")
+        claim_success = True
         results.append("📅 每日奖励已领取")
 
-    # 7. TG 通知（含到期时间）
+    # 7. 获取最新余额
+    user_info = get_user_info(s, "6a2c6addacbdb")
+    balance = user_info.get("hncoin", "?")
+    print(f"  💰 余额: {balance} HN Coins")
+    
+    # 8. TG 通知（含到期时间 + 余额 + 领取状态）
     expire_emoji = "🟢" if (days_left is None or days_left > 3) else "🟡" if days_left > 0 else "🔴"
     msg = (
         f"📍 *{name}*\n"
         f"⏰ *到期时间*: {expire_date or '未知'}\n"
         f"📅 *剩余天数*: {days_left if days_left >= 0 else '已过期'} 天 {expire_emoji}\n"
+        f"💰 *余额*: {balance} HN Coins\n"
         f"🖥 *状态*: {state}\n"
         f"💾 *配置*: {cpu}% CPU / {ram}MB RAM / {disk}MB Disk\n"
         f"{'─' * 25}\n"
