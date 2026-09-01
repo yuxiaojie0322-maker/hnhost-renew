@@ -176,7 +176,7 @@ def check_and_renew(account: dict) -> dict:
     # 4. 获取服务器状态
     info = get_server_info(s, "6a2c6addacbdb")
     raw_state = info.get("state", "Unknown") if info else "Unknown"
-    state = re.sub(r'<[^>]+>', '', raw_state).strip() if raw_state else "Unknown"
+    state = re.sub(r'狀態[：:]\s*', '', raw_state).strip() if raw_state else "Unknown"
     cpu = info.get("cpu", "?") if info else "?"
     ram = info.get("ram", "?") if info else "?"
     disk = info.get("disk", "?") if info else "?"
