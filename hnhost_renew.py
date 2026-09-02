@@ -4,7 +4,7 @@ HNHost 自动续期（多账号版）+ 每日签到检查
 Discord Token → OAuth Code → 登录 → 签到检查 + 检查服务器状态 + 到期时间 + 续期
 """
 
-import os, sys, re, json, requests, urllib3
+import os, sys, re, json, time, requests, urllib3
 from datetime import datetime, timedelta
 from urllib.parse import urljoin
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -280,7 +280,7 @@ def check_and_renew(account: dict) -> dict:
     except:
         state, cpu, ram, disk = "未知", "?", "?", "?"
 
-    # 9. 检查是否需要续期（只在服务器到期当天或已过期时才续期，避免浪费金币）
+    # 9. 检查是否需要续期（只在服务器到期当天才点一次续期按钮，避免浪费金币）
     results = []
     auto_renew = False
     
@@ -288,21 +288,47 @@ def check_and_renew(account: dict) -> dict:
         print("  ⚠️ 无法获取到期日，本次不续期（避免误操作）")
         results.append("⚠️ 到期日未知，未续期")
     elif days_left <= 0:
-        print(f"  🚨 服务器已到期（{expire_date}）！立即续期...")
+        print(f"  🚨 服务器已到期（{expire_date}）！点击续期按钮...")
         auto_renew = True
-        results.append(f"🚨 已到期，执行续期")
+        results.append(f"🚨 已到期，点击续期")
     else:
         print(f"  ✅ 服务器正常（剩余 {days_left} 天），无需续期")
         results.append(f"✅ 服务器正常（剩余 {days_left} 天）")
     
     if auto_renew:
-        print("  [9] 触发续期...")
-        # 到期当天才访问续期页面触发自动续期
+        # 到期当天才点击一次续期按钮（HNHost 没有续期页面，只有续期按钮，访问即续期扣费）
+        print("  [9] 点击续期按钮（仅一次）...")
+        old_expire = expire_date
         resp_renew2 = s.get(renew_url, timeout=20)
         if resp_renew2.status_code == 200:
-            print("  ✅ 续期页面已访问")
-            results.append("✅ 已触发续期")
+            print("  ✅ 续期按钮已点击")
+            # 等待页面跳转/结算后，重新读取到期日验证是否增加
+            time.sleep(3)
+            new_expire = None
+            try:
+                resp_home = s.get(BASE_URL, timeout=20)
+                new_expire = extract_expire_date(resp_home.text)
+            except Exception as e:
+                print(f"  [!] 续期后读取到期日失败: {e}")
+            if new_expire:
+                try:
+                    old_d = datetime.strptime(old_expire, "%Y/%m/%d")
+                    new_d = datetime.strptime(new_expire, "%Y/%m/%d")
+                    diff_days = (new_d - old_d).days
+                    if diff_days > 0:
+                        print(f"  ✅ 续期成功！到期日 {old_expire} -> {new_expire}（+{diff_days} 天）")
+                        results.append(f"✅ 续期成功：{old_expire} → {new_expire}（+{diff_days} 天）")
+                    else:
+                        print(f"  ⚠️ 到期日未增加（仍为 {new_expire}）")
+                        results.append(f"⚠️ 到期日未增加（仍为 {new_expire}）")
+                except Exception as e:
+                    print(f"  [!] 到期日比较失败: {e}")
+                    results.append(f"✅ 已点击续期（新到期日 {new_expire}）")
+            else:
+                print("  ⚠️ 续期后无法读取到期日")
+                results.append("✅ 已点击续期（到期日读取失败，请手动确认）")
         else:
+            print("  ❌ 续期按钮点击失败")
             results.append("❌ 续期失败")
 
     # 10. 准备 TG 通知
