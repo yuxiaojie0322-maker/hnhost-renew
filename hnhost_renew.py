@@ -227,20 +227,49 @@ def check_and_renew(account: dict) -> dict:
 
     print(f"  Server ID: {server_id}")
 
-    # 6. 获取到期日
-    renew_url = f"{BASE_URL}/index.php?server=renew&id={server_id}"
-    resp_renew = s.get(renew_url, timeout=20)
-    expire_date = extract_expire_date(resp_renew.text)
-    print(f"  到期日: {expire_date or '未知'}")
+    # 6. 获取到期日（只读方式，绝不无条件访问续期页，避免每天扣金币）
+    #    HNHost 访问 /index.php?server=renew 可能触发续期扣费，
+    #    因此到期日改为从 freeServerInfo API / 首页 HTML 提取，
+    #    只有到期当天（days_left <= 0）才访问续期页。
+    renew_url = f"{BASE_URL}/index.php?server=renew&id={server_id}"  # 仅在到期时使用
+    expire_date = None
+    info = {}
+    # 6a. 从服务器信息 API 提取到期字段
+    try:
+        resp_info = s.get(f"{BASE_URL}/middleware/localApi/homeInfoApi.php?fx=freeServerInfo&userId={user_id}", timeout=15)
+        info = resp_info.json().get("response", {})
+        if isinstance(info, dict):
+            for key in ("expire", "expire_time", "expireTime", "endTime", "dueTime", "deadline", "end_date", "endDate"):
+                val = info.get(key)
+                if val:
+                    m = re.search(r'(\d{4}/\d{2}/\d{2})', str(val))
+                    if m:
+                        expire_date = m.group(1)
+                        print(f"  [DEBUG] 到期日来自 API.{key} = {val}")
+                        break
+    except Exception as e:
+        print(f"  [!] 服务器信息 API 失败: {e}")
+    # 6b. 若 API 没有，从首页 HTML 提取（首页不含续期动作）
+    if not expire_date:
+        try:
+            resp_home = s.get(BASE_URL, timeout=20)
+            expire_date = extract_expire_date(resp_home.text)
+            if expire_date:
+                print("  [DEBUG] 到期日来自首页 HTML")
+            else:
+                idx = resp_home.text.find("到期")
+                if idx >= 0:
+                    print(f"  [DEBUG] 首页'到期'附近: {resp_home.text[idx:idx+200]}")
+        except Exception as e:
+            print(f"  [!] 首页到期日提取失败: {e}")
+    print(f"  到期日: {expire_date or '未知'}（只读获取，未访问续期页）")
 
     # 7. 计算剩余天数
     days_left = calculate_days_left(expire_date) if expire_date else -1
     print(f"  剩余天数: {days_left} 天")
 
-    # 8. 获取服务器状态
+    # 8. 获取服务器状态（复用第 6 步已获取的 info，避免重复请求）
     try:
-        resp_info = s.get(f"{BASE_URL}/middleware/localApi/homeInfoApi.php?fx=freeServerInfo&userId={user_id}", timeout=15)
-        info = resp_info.json().get("response", {})
         raw_state = info.get("state", "Unknown") if info else "Unknown"
         state = re.sub(r'狀態[：:]\s*', '', raw_state).strip() if raw_state else "Unknown"
         state = re.sub(r'<[^>]+>', '', state).strip()
@@ -251,31 +280,30 @@ def check_and_renew(account: dict) -> dict:
     except:
         state, cpu, ram, disk = "未知", "?", "?", "?"
 
-    # 9. 检查是否需要续期（仅在到期前一天或当天自动续期）
+    # 9. 检查是否需要续期（只在服务器到期当天或已过期时才续期，避免浪费金币）
     results = []
     auto_renew = False
     
-    if days_left <= 0:
-        print(f"  🚨 服务器已到期！立即续期...")
+    if expire_date is None:
+        print("  ⚠️ 无法获取到期日，本次不续期（避免误操作）")
+        results.append("⚠️ 到期日未知，未续期")
+    elif days_left <= 0:
+        print(f"  🚨 服务器已到期（{expire_date}）！立即续期...")
         auto_renew = True
-    elif days_left == 1:
-        print(f"  ⚠️ 明天到期，执行续期...")
-        auto_renew = True
+        results.append(f"🚨 已到期，执行续期")
     else:
         print(f"  ✅ 服务器正常（剩余 {days_left} 天），无需续期")
         results.append(f"✅ 服务器正常（剩余 {days_left} 天）")
     
     if auto_renew:
-        print("  [6] 触发续期...")
-        # 访问续期页面触发自动续期
+        print("  [9] 触发续期...")
+        # 到期当天才访问续期页面触发自动续期
         resp_renew2 = s.get(renew_url, timeout=20)
         if resp_renew2.status_code == 200:
             print("  ✅ 续期页面已访问")
             results.append("✅ 已触发续期")
         else:
             results.append("❌ 续期失败")
-    else:
-        results.append(f"✅ 服务器正常（剩余 {days_left} 天）")
 
     # 10. 准备 TG 通知
     expire_emoji = "🟢" if (days_left is None or days_left > 3) else "🟡" if days_left > 0 else "🔴"
