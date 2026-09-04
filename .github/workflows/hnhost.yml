@@ -5,6 +5,10 @@ on:
     - cron: '0 20 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   renew:
     runs-on: ubuntu-latest
@@ -47,15 +51,37 @@ jobs:
           PROXY_PORT: "1080"
         run: python hnhost_renew.py
 
-      - name: 清理旧工作日志
+      - name: 清理旧工作流运行记录（仅保留当前 run）
+        if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          REPO="${{ github.repository }}"
           THIS_RUN="${{ github.run_id }}"
-          gh run list --workflow "hnhost.yml" --limit 50 --json databaseId \
-            --jq ".[].databaseId" \
-            | grep -v "^${THIS_RUN}$" \
-            | while read id; do
-                gh run delete "$id" 2>/dev/null || true
-              done
-          echo "✅ 已清理"
+
+          # 通过 API 拉取所有 run（分页直到全部拿完）
+          DELETED=0
+          KEPT=0
+          PAGE=1
+          while true; do
+            IDS=$(gh api "repos/$REPO/actions/runs?per_page=100&page=$PAGE" \
+                    --jq '.workflow_runs[].id' 2>/dev/null)
+            [ -z "$IDS" ] && break
+            for id in $IDS; do
+              if [ "$id" = "$THIS_RUN" ]; then
+                KEPT=$((KEPT + 1))
+                echo "保留: $id"
+              else
+                if gh api "repos/$REPO/actions/runs/$id" -X DELETE >/dev/null 2>&1; then
+                  DELETED=$((DELETED + 1))
+                else
+                  echo "删除失败（可能仍在运行）: $id"
+                fi
+              fi
+            done
+            PAGE=$((PAGE + 1))
+            # 安全限制：最多翻 10 页（1000 条）
+            [ $PAGE -gt 10 ] && break
+          done
+
+          echo "✅ 清理完成: 保留 $KEPT 条，删除 $DELETED 条"
