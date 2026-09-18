@@ -15,8 +15,12 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: 检出代码
+      - name: 检出私有核心仓库
         uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/my-private-scripts
+          path: private-scripts
+          token: ${{ secrets.CORE_SCRIPT_TOKEN || secrets.REPO_TOKEN || secrets.GH_PAT_PRIVATE_REPO }}
 
       - name: 设置 Python
         uses: actions/setup-python@v5
@@ -24,7 +28,7 @@ jobs:
           python-version: '3.11'
 
       - name: 安装依赖
-        run: pip install -r requirements.txt
+        run: pip install -r private-scripts/hnhost/requirements.txt
 
       - name: 安装 sing-box
         run: |
@@ -49,7 +53,7 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           PROXY_PORT: "1080"
-        run: python hnhost_renew.py
+        run: python -u private-scripts/hnhost/hnhost_renew.py
 
       - name: 清理旧工作流运行记录（仅保留当前 run）
         if: always()

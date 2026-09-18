@@ -1,38 +1,22 @@
-# 🏠 HNHost 自动续期
+# 🏠 HNHost 自动续期工作流
 
-基于 GitHub Actions + sing-box Hysteria2 代理，自动续期 HNHost 免费 VPS。
+公开运行 GitHub Actions 工作流，核心运行脚本存放于统一私有仓库 `my-private-scripts/hnhost` 中。
+基于 sing-box Hysteria2 代理绕过限制，自动完成 HNHost 多账号登录、每日签到、VPS 状态监控与到期自动续期，支持 Telegram 详细消息推送。
 
-## ✨ 功能
+## 配置说明
 
-- ✅ Hysteria2 代理绕过 IP 封锁
-- ✅ PHPSESSID Cookie 登录（无需 Discord OAuth）
-- ✅ 自动访问 create.php / renew.php 续期
-- ✅ TG 消息推送
-- ✅ 自动清理旧工作流日志
+需要在本仓库的 **Settings -> Secrets and variables -> Actions** 中配置以下 Secrets：
 
-## 🚀 部署
+| Secret 名称 | 说明 | 是否必填 |
+| :--- | :--- | :--- |
+| `CORE_SCRIPT_TOKEN` 或 `REPO_TOKEN` | 具备读取私有仓库 `my-private-scripts` 权限的 GitHub Personal Access Token (PAT) | 必填 |
+| `DISCORD_TOKENS` | Discord 授权 Token 列表（JSON 数组格式，例如 `["token1", "token2"]`） | 必填 |
+| `TG_BOT_TOKEN` | Telegram Bot Token，用于发送通知 | 选填 |
+| `TG_CHAT_ID` | Telegram 接收通知的 Chat ID | 选填 |
 
-### 1. 配置 GitHub Secrets
+## 手动触发测试
 
-
-### 2. 获取 Cookie
-
-1. 浏览器打开 https://client.hnhost.net → Discord 登录
-2. F12 → Application → Cookies → `https://client.hnhost.net`
-3. 复制 `PHPSESSID` 和 `cf_clearance` 的值
-4. 格式: `PHPSESSID=xxx; cf_clearance=xxx`
-
-⚠️ Cookie 有效期约 1 天，过期后 TG 会通知你重新获取。
-
-### 3. 触发测试
-
-Actions → HNHost 自动续期 → Run workflow
-
-## 📂 文件结构
-
-```
-├── .github/workflows/hnhost.yml   # GitHub Actions
-├── hnhost_renew.py                 # 主脚本
-├── requirements.txt                # Python 依赖
-└── README.md
-```
+1. 打开本仓库的 **Actions** 页面。
+2. 选择 **HNHost 自动续期** 工作流。
+3. 点击 **Run workflow** 手动触发测试。
+4. 之后每天 20:00 (UTC) 自动定时执行。
