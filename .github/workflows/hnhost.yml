@@ -37,23 +37,46 @@ jobs:
           chmod +x /tmp/sing-box
           /tmp/sing-box version | head -1
 
-      - name: 启动 Hysteria2 代理
-        run: |
-          cat > /tmp/sb-config.json << 'EOF'
-          {"log":{"level":"info"},"inbounds":[{"type":"socks","listen":"127.0.0.1","listen_port":1080}],"outbounds":[{"type":"hysteria2","server":"168.107.22.153","server_port":41706,"password":"6d126f82-f51f-4bdb-91ec-3a2a9cf84306","tls":{"enabled":true,"server_name":"www.bing.com","insecure":true}}]}
-          EOF
-          nohup /tmp/sing-box run -c /tmp/sb-config.json > /tmp/sb.log 2>&1 &
-          sleep 5
-          echo "=== proxy test ==="
-          curl -s --socks5-hostname 127.0.0.1:1080 https://httpbin.org/ip --max-time 15 || echo "proxy failed"
-
-      - name: 执行续期
+      - name: 启动 VLESS 代理并执行续期
         env:
           DISCORD_TOKENS: ${{ secrets.DISCORD_TOKENS }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           PROXY_PORT: "1080"
-        run: python -u private-scripts/hnhost/hnhost_renew.py
+        run: |
+          cat > /tmp/sb-config.json << 'EOF'
+          {
+            "log": { "level": "info" },
+            "inbounds": [
+              { "type": "socks", "listen": "127.0.0.1", "listen_port": 1080 }
+            ],
+            "outbounds": [
+              {
+                "type": "vless",
+                "server": "cdns.doon.eu.org",
+                "server_port": 443,
+                "uuid": "694949f5-54c3-4113-b3c9-2d2518f770f4",
+                "tls": {
+                  "enabled": true,
+                  "server_name": "unikraft-1.blibli.kdns.fr",
+                  "utls": { "enabled": true, "fingerprint": "chrome" }
+                },
+                "transport": {
+                  "type": "ws",
+                  "path": "/",
+                  "host": "unikraft-1.blibli.kdns.fr"
+                },
+                "u16": { "packet_encoding": "xudp" }
+              }
+            ]
+          }
+          EOF
+          # 同一步骤里启动代理并跑脚本，避免跨步骤进程被回收
+          setsid /tmp/sing-box run -c /tmp/sb-config.json > /tmp/sb.log 2>&1 &
+          sleep 8
+          echo "=== proxy test ==="
+          curl -s --socks5-hostname 127.0.0.1:1080 https://httpbin.org/ip --max-time 15 || { echo "❌ 代理连接失败"; cat /tmp/sb.log; exit 1; }
+          python -u private-scripts/hnhost/hnhost_renew.py
 
       - name: 清理旧工作流运行记录（仅保留当前 run）
         if: always()
@@ -62,13 +85,14 @@ jobs:
         run: |
           REPO="${{ github.repository }}"
           THIS_RUN="${{ github.run_id }}"
+          # 仅清理当前 workflow 的历史运行
+          WF_ID="${{ github.workflow_id }}"
 
-          # 通过 API 拉取所有 run（分页直到全部拿完）
           DELETED=0
           KEPT=0
           PAGE=1
           while true; do
-            IDS=$(gh api "repos/$REPO/actions/runs?per_page=100&page=$PAGE" \
+            IDS=$(gh api "repos/$REPO/actions/runs?per_page=100&page=$PAGE&workflow_id=$WF_ID" \
                     --jq '.workflow_runs[].id' 2>/dev/null)
             [ -z "$IDS" ] && break
             for id in $IDS; do
@@ -84,7 +108,6 @@ jobs:
               fi
             done
             PAGE=$((PAGE + 1))
-            # 安全限制：最多翻 10 页（1000 条）
             [ $PAGE -gt 10 ] && break
           done
 
