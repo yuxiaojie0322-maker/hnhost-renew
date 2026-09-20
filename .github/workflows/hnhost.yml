@@ -2,7 +2,7 @@ name: HNHost 自动续期
 
 on:
   schedule:
-    - cron: '0 20 * * *'
+    - cron: '0 22 * * *'  # 北京时间 06:00
   workflow_dispatch:
 
 permissions:
