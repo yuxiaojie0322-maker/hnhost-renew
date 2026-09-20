@@ -52,21 +52,24 @@ jobs:
             ],
             "outbounds": [
               {
-                "type": "vless",
-                "server": "cdns.doon.eu.org",
+                "type": "vmess",
+                "server": "saas.sin.fan",
                 "server_port": 443,
-                "uuid": "694949f5-54c3-4113-b3c9-2d2518f770f4",
+                "uuid": "662d58c6-6ba9-446b-9be5-8b77052940e8",
+                "security": "none",
+                "alter_id": 0,
                 "tls": {
                   "enabled": true,
-                  "server_name": "unikraft-1.blibli.kdns.fr",
+                  "server_name": "host-ship.blibli.kdns.fr",
                   "utls": { "enabled": true, "fingerprint": "chrome" }
                 },
                 "transport": {
                   "type": "ws",
-                  "path": "/",
-                  "host": "unikraft-1.blibli.kdns.fr"
-                },
-                "u16": { "packet_encoding": "xudp" }
+                  "path": "/vmess-argo",
+                  "headers": {
+                    "Host": "host-ship.blibli.kdns.fr"
+                  }
+                }
               }
             ]
           }
